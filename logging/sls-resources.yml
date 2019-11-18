@@ -9,6 +9,33 @@ logProcessingStream:
     RetentionPeriodHours: 24
     ShardCount: 1
 
+logProcessingStreamAccessRole:
+  Type: AWS::IAM::Role
+  Properties:
+    AssumeRolePolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: firehose.amazonaws.com
+          Action: sts:AssumeRole
+          Condition:
+            StringEquals:
+              sts:ExternalId:
+                Ref: AWS::AccountId
+    Policies:
+      - PolicyName: firehose-data-stream-access-policy-${self:provider.stage}
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:DescribeStream
+                - kinesis:GetRecords
+                - kinesis:GetShardIterator
+              Resource:
+                - !GetAtt logProcessingStream.Arn
+
 logFirehoseStreamAccessRole:
   Type: AWS::IAM::Role
   Properties:
@@ -40,12 +67,21 @@ logFirehoseStreamAccessRole:
               Resource:
                 - arn:aws:s3:::${self:custom.logBucketName}
                 - arn:aws:s3:::${self:custom.logBucketName}/*
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+                - lambda:GetFunctionConfiguration
+              Resource:
+                - !GetAtt LogProcessorLambdaFunction.Arn
 
 logFirehoseStream:
   Type: AWS::KinesisFirehose::DeliveryStream
   Properties:
     DeliveryStreamName: firehose-logs-delivery-stream-${self:provider.stage}
-    DeliveryStreamType: DirectPut
+    DeliveryStreamType: KinesisStreamAsSource
+    KinesisStreamSourceConfiguration:
+      KinesisStreamARN: !GetAtt logProcessingStream.Arn
+      RoleARN: !GetAtt logProcessingStreamAccessRole.Arn
     ExtendedS3DestinationConfiguration:
       BucketARN: arn:aws:s3:::${self:custom.logBucketName}
       RoleARN: { Fn::GetAtt: [logFirehoseStreamAccessRole, Arn] }
@@ -67,7 +103,7 @@ logFirehoseStream:
       BufferingHints:
         IntervalInSeconds: 60
         SizeInMBs: 128
-      CompressionFormat: GZIP # Options are UNCOMPRElSED, GZIP, ZIP, Snappy
+      CompressionFormat: GZIP # Options are UNCOMPRESSED, GZIP, ZIP, Snappy
 
 autoSubscribeLogGroupsStream:
   Type: AWS::Serverless::Application
@@ -80,22 +116,8 @@ autoSubscribeLogGroupsStream:
       Prefix: '/aws/lambda/'
       Tags: SLIC_STAGE=${self:provider.stage}
       ExcludeTags: LOGS_EXCLUDE=true
-      FilterName: forward-logs-kinesis-stream
-      FilterPattern: '?REPORT ?MONITORING'
-      UnsubscribeOnDelete: true
-
-autoSubscribeLogGroupsFirehose:
-  Type: AWS::Serverless::Application
-  Properties:
-    Location:
-      ApplicationId: arn:aws:serverlessrepo:us-east-1:374852340823:applications/auto-subscribe-log-group-to-arn
-      SemanticVersion: 1.11.0
-    Parameters:
-      DestinationArn: !GetAtt logFirehoseStream.Arn
-      Prefix: '/aws/lambda/'
-      Tags: SLIC_STAGE=${self:provider.stage}
-      ExcludeTags: LOGS_EXCLUDE=true
-      FilterName: forward-logs-firehose
+      #      FilterName: forward-logs-kinesis-stream
+      #      FilterPattern: '?REPORT ?MONITORING'
       UnsubscribeOnDelete: true
 
 autoSetLogGroupsRetention:
